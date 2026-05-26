@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🎯 Smart Notes Application</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <!-- Login Page (shown when not authenticated) -->
+    <div id="loginPage" class="login-page">
+        <div class="login-container">
+            <div class="login-box">
+                <h1>📓 Smart Notes</h1>
+                <p class="login-subtitle">Organize Your Notes Efficiently</p>
+
+                <!-- Login Tab -->
+                <div class="login-tabs">
+                    <button class="login-tab-btn active" onclick="switchTab('login')">🔓 Login</button>
+                    <button class="login-tab-btn" onclick="switchTab('register')">📝 Register</button>
+                </div>
+
+                <!-- Login Form -->
+                <form id="loginForm" class="login-form active" onsubmit="handleLogin(event)">
+                    <div class="form-group">
+                        <label for="loginUsername">👤 Username</label>
+                        <input 
+                            type="text" 
+                            id="loginUsername" 
+                            class="form-control" 
+                            placeholder="Enter your username"
+                            required
+                        >
+                    </div>
+
+                    <div class="form-group">
+                        <label for="loginPassword">🔐 Password</label>
+                        <input 
+                            type="password" 
+                            id="loginPassword" 
+                            class="form-control" 
+                            placeholder="Enter your password"
+                            required
+                        >
+                    </div>
+
+                    <button type="submit" class="btn-primary btn-login">Login</button>
+                    <p class="login-message" id="loginMessage"></p>
+                </form>
+
+                <!-- Register Form -->
+                <form id="registerForm" class="login-form" onsubmit="handleRegister(event)">
+                    <div class="form-group">
+                        <label for="regUsername">👤 Username</label>
+                        <input 
+                            type="text" 
+                            id="regUsername" 
+                            class="form-control" 
+                            placeholder="Choose a username (min 3 characters)"
+                            required
+                        >
+                    </div>
+
+                    <div class="form-group">
+                        <label for="regEmail">📧 Email</label>
+                        <input 
+                            type="email" 
+                            id="regEmail" 
+                            class="form-control" 
+                            placeholder="Enter your email"
+                            required
+                        >
+                    </div>
+
+                    <div class="form-group">
+                        <label for="regPassword">🔐 Password</label>
+                        <input 
+                            type="password" 
+                            id="regPassword" 
+                            class="form-control" 
+                            placeholder="Enter password (min 6 characters)"
+                            required
+                        >
+                    </div>
+
+                    <div class="form-group">
+                        <label for="regConfirmPassword">🔐 Confirm Password</label>
+                        <input 
+                            type="password" 
+                            id="regConfirmPassword" 
+                            class="form-control" 
+                            placeholder="Confirm your password"
+                            required
+                        >
+                    </div>
+
+                    <button type="submit" class="btn-primary btn-login">Register</button>
+                    <p class="login-message" id="registerMessage"></p>
+                </form>
+            </div>
+
+            <div class="login-footer">
+                <p>🚀 Smart Notes - Your personal note-taking assistant</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main App (shown when authenticated) -->
+    <div id="appPage" class="app-page" style="display: none;">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-container">
+                <div class="header-left">
+                    <h1>📓 Smart Notes</h1>
+                    <span class="mode-badge" id="modeBadge">LOCAL</span>
+                </div>
+                <div class="header-right">
+                    <span class="user-info" id="userInfo">User</span>
+                    <button class="btn-help" onclick="showHelp()">❓ Help</button>
+                    <button class="btn-logout" onclick="handleLogout()">🚪 Logout</button>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Container -->
+        <div class="container">
+            <!-- Sidebar -->
+            <aside class="sidebar">
+                <div class="sidebar-section">
+                    <h3>📁 Subjects</h3>
+                    <div id="subjectsList" class="subjects-list">
+                        <button class="subject-btn active" onclick="filterBySubject(null)">
+                            📌 All Notes
+                        </button>
+                    </div>
+                </div>
+
+                <div class="sidebar-section">
+                    <h3>⭐ Quick Actions</h3>
+                    <button class="btn-primary" onclick="openAddNoteModal()">
+                        ➕ New Note
+                    </button>
+                </div>
+
+                <div class="sidebar-section">
+                    <h3>📊 Statistics</h3>
+                    <div class="stats">
+                        <div class="stat-item">
+                            <span class="stat-label">Total Notes</span>
+                            <span class="stat-value" id="totalNotes">0</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Pinned</span>
+                            <span class="stat-value" id="pinnedNotes">0</span>
+                        </div>
+                    </div>
+                </div>
+            </aside>
+
+            <!-- Main Content -->
+            <main class="main-content">
+                <!-- Search & Sort Bar -->
+                <div class="controls-container">
+                    <div class="search-container">
+                        <input 
+                            type="text" 
+                            id="searchInput" 
+                            class="search-box" 
+                            placeholder="🔍 Search notes by title or content..."
+                            onkeyup="searchNotes()"
+                        >
+                        <button class="btn-secondary" onclick="clearSearch()">Clear</button>
+                    </div>
+
+                    <!-- Sort Options -->
+                    <div class="sort-container">
+                        <label for="sortSelect" class="sort-label">📊 Sort by:</label>
+                        <select id="sortSelect" class="sort-select" onchange="changeSortOrder()">
+                            <option value="latest">⏱️ Latest First</option>
+                            <option value="oldest">⏰ Oldest First</option>
+                            <option value="title_asc">A → Z Title</option>
+                            <option value="title_desc">Z → A Title</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Notes Grid -->
+                <div id="notesContainer" class="notes-grid">
+                    <div class="empty-state">
+                        <p>📝 No notes yet</p>
+                        <p class="empty-state-subtitle">Create your first note to get started!</p>
+                    </div>
+                </div>
+            </main>
+        </div>
+
+        <!-- Add/Edit Note Modal -->
+        <div id="noteModal" class="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2 id="modalTitle">➕ Create New Note</h2>
+                    <button class="modal-close" onclick="closeNoteModal()">&times;</button>
+                </div>
+
+                <form id="noteForm" class="note-form">
+                    <!-- Title -->
+                    <div class="form-group">
+                        <label for="noteTitle">📌 Note Title *</label>
+                        <input 
+                            type="text" 
+                            id="noteTitle" 
+                            class="form-control" 
+                            placeholder="Enter note title"
+                            required
+                        >
+                    </div>
+
+                    <!-- Subject -->
+                    <div class="form-group">
+                        <label for="noteSubject">🏷️ Subject *</label>
+                        <div class="subject-input-group">
+                            <input 
+                                type="text" 
+                                id="noteSubject" 
+                                class="form-control" 
+                                placeholder="e.g., ML, DBMS, Personal, Web Development"
+                                list="subjectSuggestions"
+                                required
+                            >
+                            <datalist id="subjectSuggestions"></datalist>
+                        </div>
+                    </div>
+
+                    <!-- Content -->
+                    <div class="form-group">
+                        <label for="noteContent">✍️ Content *</label>
+                        <textarea 
+                            id="noteContent" 
+                            class="form-control form-textarea" 
+                            placeholder="Write your note here... (supports multiple lines)"
+                            required
+                            rows="8"
+                        ></textarea>
+                    </div>
+
+                    <!-- File Upload -->
+                    <div class="form-group">
+                        <label for="noteFile">📎 Attach File (Optional)</label>
+                        <div class="file-upload-container">
+                            <input 
+                                type="file" 
+                                id="noteFile" 
+                                class="file-input"
+                                accept=".txt,.pdf,.docx,.doc,.png,.jpg,.jpeg,.gif"
+                            >
+                            <label for="noteFile" class="file-label">
+                                📁 Choose file or drag here
+                            </label>
+                            <p class="file-help">Supported: PDF, DOCX, TXT, PNG, JPG, GIF (Max 50MB)</p>
+                            <div id="filePreview" class="file-preview"></div>
+                            <div id="existingFilePreview" class="existing-file-preview"></div>
+                        </div>
+                    </div>
+
+                    <!-- Form Actions -->
+                    <div class="form-actions">
+                        <button type="button" class="btn-secondary" onclick="closeNoteModal()">Cancel</button>
+                        <button type="submit" class="btn-primary">💾 Save Note</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- View Note Modal -->
+        <div id="viewModal" class="modal">
+            <div class="modal-content modal-large">
+                <div class="modal-header">
+                    <h2 id="viewModalTitle">📖 View Note</h2>
+                    <button class="modal-close" onclick="closeViewModal()">&times;</button>
+                </div>
+
+                <div id="viewModalBody" class="view-modal-body">
+                    <!-- Content will be inserted here -->
+                </div>
+
+                <div class="view-modal-footer">
+                    <button class="btn-secondary" onclick="closeViewModal()">Close</button>
+                    <button class="btn-info" id="editNoteBtn" onclick="editCurrentNote()">✏️ Edit</button>
+                    <button class="btn-danger" id="deleteNoteBtn" onclick="deleteCurrentNote()">🗑️ Delete</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Help Modal -->
+        <div id="helpModal" class="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>❓ Help & Information</h2>
+                    <button class="modal-close" onclick="closeHelpModal()">&times;</button>
+                </div>
+
+                <div class="help-content">
+                    <h3>🚀 Getting Started</h3>
+                    <ul>
+                        <li><strong>Create a Note:</strong> Click "New Note" and fill in the details</li>
+                        <li><strong>Add Files:</strong> Attach PDFs, documents, or images to your notes</li>
+                        <li><strong>Organize:</strong> Notes are automatically organized by subject</li>
+                        <li><strong>Pin Important:</strong> Pin your most important notes</li>
+                        <li><strong>Search:</strong> Use the search bar to find notes quickly</li>
+                        <li><strong>Sort:</strong> Sort notes by date or title</li>
+                    </ul>
+
+                    <h3>💡 Features</h3>
+                    <ul>
+                        <li><strong>Smart Tagging:</strong> Tags are auto-generated based on content</li>
+                        <li><strong>Subject Grouping:</strong> View notes by subject category</li>
+                        <li><strong>File Support:</strong> PDF, DOCX, TXT, and image files</li>
+                        <li><strong>Cloud/Local:</strong> Works with cloud or local storage</li>
+                        <li><strong>Sorting:</strong> Sort notes by latest/oldest or alphabetical order</li>
+                    </ul>
+
+                    <h3>⚙️ Application Mode</h3>
+                    <p>
+                        <strong>Current Mode: <span id="helpMode">LOCAL</span></strong>
+                    </p>
+                    <p>
+                        This application runs in either LOCAL or CLOUD mode:
+                        <br><strong>LOCAL:</strong> Notes stored in SQLite (local computer)
+                        <br><strong>CLOUD:</strong> Notes stored in AWS DynamoDB
+                    </p>
+
+                    <h3>🎯 Tips & Tricks</h3>
+                    <ul>
+                        <li>Use descriptive titles for better searching</li>
+                        <li>Pin frequently accessed notes for quick access</li>
+                        <li>Use consistent subject names for better organization</li>
+                        <li>Attach PDFs of your lecture notes for reference</li>
+                        <li>Use the sort feature to organize notes chronologically or alphabetically</li>
+                    </ul>
+                </div>
+
+                <div class="form-actions">
+                    <button class="btn-primary" onclick="closeHelpModal()">Got it!</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="{{ url_for('static', filename='js/script.js') }}"></script>
+</body>
+</html>
