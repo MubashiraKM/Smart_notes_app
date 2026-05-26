@@ -1,7 +1,3 @@
-"""
-Smart Notes Application - Flask Backend (FIXED VERSION)
-Hybrid Cloud + Local Architecture
-"""
 import os
 import uuid
 import json
@@ -15,23 +11,15 @@ import re
 
 from config import Config
 
-# Initialize Flask App
 app = Flask(__name__)
 app.config.from_object(Config)
 CORS(app)
 
-# ============================================================================
-# LOGIN CONFIGURATION
-# ============================================================================
-
-# Secret key for sessions
 app.secret_key = app.config['SECRET_KEY']
 
-# Create necessary directories
 os.makedirs(app.config['LOCAL_STORAGE_PATH'], exist_ok=True)
 os.makedirs(app.config['DATABASE_PATH'], exist_ok=True)
 
-# AWS SDK (only imported if needed)
 AWS_AVAILABLE = False
 try:
     import boto3
@@ -39,17 +27,12 @@ try:
 except ImportError:
     pass
 
-# ============================================================================
-# DATABASE INITIALIZATION (Including Users Table)
-# ============================================================================
 
 def init_db():
-    """Initialize SQLite database with notes and users table"""
     if app.config['APP_MODE'] == 'LOCAL':
         conn = sqlite3.connect(app.config['SQLITE_DB_PATH'])
         cursor = conn.cursor()
-        
-        # Create notes table
+        # notes table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS notes (
                 id TEXT PRIMARY KEY,
@@ -65,7 +48,7 @@ def init_db():
             )
         ''')
         
-        # Create users table
+        # users table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 user_id TEXT PRIMARY KEY,
@@ -79,143 +62,380 @@ def init_db():
         conn.commit()
         conn.close()
 
-# Initialize database on app startup
 with app.app_context():
     init_db()
 
-# ============================================================================
-# UTILITY FUNCTIONS (Login Related)
-# ============================================================================
-
 def get_sqlite_connection():
-    """Get SQLite database connection"""
     conn = sqlite3.connect(app.config['SQLITE_DB_PATH'])
     conn.row_factory = sqlite3.Row
     return conn
 
 def hash_password(password):
-    """Hash a password"""
     return generate_password_hash(password)
 
 def verify_password(password, password_hash):
-    """Verify a password against its hash"""
     return check_password_hash(password_hash, password)
 
+def register_user_cloud(username, email, password):
+    try:
+        table = get_users_table()
+
+        response = table.scan(
+            FilterExpression='username = :u OR email = :e',
+            ExpressionAttributeValues={
+                ':u': username,
+                ':e': email
+            }
+        )
+
+        if response.get('Items'):
+            return {
+                'success': False,
+                'message': 'Username or email already exists'
+            }
+
+        user_id = str(uuid.uuid4())
+
+        table.put_item(
+            Item={
+                'user_id': user_id,
+                'username': username,
+                'email': email,
+                'password_hash': hash_password(password),
+                'created_at': datetime.now().isoformat()
+            }
+        )
+
+        return {
+            'success': True,
+            'user_id': user_id
+        }
+
+    except Exception as e:
+        return {
+            'success': False,
+            'message': str(e)
+        }
+    
+def login_user_cloud(username, password):
+    try:
+        table = get_users_table()
+
+        response = table.scan(
+            FilterExpression='username = :u',
+            ExpressionAttributeValues={
+                ':u': username
+            }
+        )
+
+        items = response.get('Items', [])
+
+        if not items:
+            return None
+
+        user = items[0]
+
+        if not verify_password(password, user['password_hash']):
+            return None
+
+        return user
+
+    except Exception:
+        return None
+
 def is_logged_in():
-    """Check if user is logged in"""
     return 'user_id' in session
 
 def get_current_user_id():
-    """Get current logged in user ID"""
     return session.get('user_id')
 
-# ============================================================================
-# LOGIN ROUTES
-# ============================================================================
+
 
 @app.route('/api/register', methods=['POST'])
 def register():
-    """Register a new user"""
     try:
         data = request.get_json()
+
         username = data.get('username', '').strip()
         email = data.get('email', '').strip()
         password = data.get('password', '').strip()
         confirm_password = data.get('confirm_password', '').strip()
-        
-        # Validation
+
         if not username or not email or not password or not confirm_password:
-            return jsonify({'success': False, 'message': 'All fields are required'}), 400
-        
+            return jsonify({
+                'success': False,
+                'message': 'All fields are required'
+            }), 400
+
         if len(username) < 3:
-            return jsonify({'success': False, 'message': 'Username must be at least 3 characters'}), 400
-        
+            return jsonify({
+                'success': False,
+                'message': 'Username must be at least 3 characters'
+            }), 400
+
         if len(password) < 6:
-            return jsonify({'success': False, 'message': 'Password must be at least 6 characters'}), 400
-        
+            return jsonify({
+                'success': False,
+                'message': 'Password must be at least 6 characters'
+            }), 400
+
         if password != confirm_password:
-            return jsonify({'success': False, 'message': 'Passwords do not match'}), 400
-        
+            return jsonify({
+                'success': False,
+                'message': 'Passwords do not match'
+            }), 400
+
         if '@' not in email:
-            return jsonify({'success': False, 'message': 'Invalid email format'}), 400
-        
-        # Check if user already exists
-        conn = get_sqlite_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute('SELECT user_id FROM users WHERE username = ? OR email = ?', (username, email))
-        if cursor.fetchone():
+            return jsonify({
+                'success': False,
+                'message': 'Invalid email format'
+            }), 400
+
+        # LOCAL MODE
+        if app.config['APP_MODE'] == 'LOCAL':
+
+            conn = get_sqlite_connection()
+            cursor = conn.cursor()
+
+            cursor.execute(
+                'SELECT user_id FROM users WHERE username = ? OR email = ?',
+                (username, email)
+            )
+
+            if cursor.fetchone():
+                conn.close()
+
+                return jsonify({
+                    'success': False,
+                    'message': 'Username or email already exists'
+                }), 400
+
+            user_id = str(uuid.uuid4())
+
+            password_hash = hash_password(password)
+
+            now = datetime.now().isoformat()
+
+            cursor.execute('''
+                INSERT INTO users (
+                    user_id,
+                    username,
+                    email,
+                    password_hash,
+                    created_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+            ''', (
+                user_id,
+                username,
+                email,
+                password_hash,
+                now
+            ))
+
+            conn.commit()
             conn.close()
-            return jsonify({'success': False, 'message': 'Username or email already exists'}), 400
-        
-        # Create new user
-        user_id = str(uuid.uuid4())
-        password_hash = hash_password(password)
-        now = datetime.now().isoformat()
-        
-        cursor.execute('''
-            INSERT INTO users (user_id, username, email, password_hash, created_at)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (user_id, username, email, password_hash, now))
-        
-        conn.commit()
-        conn.close()
-        
+
+        # CLOUD MODE
+        else:
+
+            result = register_user_cloud(
+                username,
+                email,
+                password
+            )
+
+            if not result['success']:
+                return jsonify(result), 400
+
+            user_id = result['user_id']
+
         return jsonify({
             'success': True,
             'message': 'Registration successful! Please login.',
             'user_id': user_id
         }), 201
-    
+
     except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
+
+# @app.route('/api/register', methods=['POST'])
+# def register():
+#     try:
+#         data = request.get_json()
+#         username = data.get('username', '').strip()
+#         email = data.get('email', '').strip()
+#         password = data.get('password', '').strip()
+#         confirm_password = data.get('confirm_password', '').strip()
+
+#         if not username or not email or not password or not confirm_password:
+#             return jsonify({'success': False, 'message': 'All fields are required'}), 400
+        
+#         if len(username) < 3:
+#             return jsonify({'success': False, 'message': 'Username must be at least 3 characters'}), 400
+        
+#         if len(password) < 6:
+#             return jsonify({'success': False, 'message': 'Password must be at least 6 characters'}), 400
+        
+#         if password != confirm_password:
+#             return jsonify({'success': False, 'message': 'Passwords do not match'}), 400
+        
+#         if '@' not in email:
+#             return jsonify({'success': False, 'message': 'Invalid email format'}), 400
+        
+#         conn = get_sqlite_connection()
+#         cursor = conn.cursor()
+        
+#         cursor.execute('SELECT user_id FROM users WHERE username = ? OR email = ?', (username, email))
+#         if cursor.fetchone():
+#             conn.close()
+#             return jsonify({'success': False, 'message': 'Username or email already exists'}), 400
+        
+#         user_id = str(uuid.uuid4())
+#         password_hash = hash_password(password)
+#         now = datetime.now().isoformat()
+        
+#         cursor.execute('''
+#             INSERT INTO users (user_id, username, email, password_hash, created_at)
+#             VALUES (?, ?, ?, ?, ?)
+#         ''', (user_id, username, email, password_hash, now))
+        
+#         conn.commit()
+#         conn.close()
+        
+#         return jsonify({
+#             'success': True,
+#             'message': 'Registration successful! Please login.',
+#             'user_id': user_id
+#         }), 201
+    
+#     except Exception as e:
+#         return jsonify({'success': False, 'message': str(e)}), 500
+
 
 @app.route('/api/login', methods=['POST'])
 def login():
-    """Login user"""
+
     try:
         data = request.get_json()
+
         username = data.get('username', '').strip()
         password = data.get('password', '').strip()
-        
-        # Validation
+
         if not username or not password:
-            return jsonify({'success': False, 'message': 'Username and password are required'}), 400
-        
-        # Get user from database
-        conn = get_sqlite_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute('SELECT user_id, username, password_hash FROM users WHERE username = ?', (username,))
-        user = cursor.fetchone()
-        conn.close()
-        
-        if not user:
-            return jsonify({'success': False, 'message': 'Invalid username or password'}), 401
-        
-        # Verify password
-        if not verify_password(password, user['password_hash']):
-            return jsonify({'success': False, 'message': 'Invalid username or password'}), 401
-        
-        # Create session
+            return jsonify({
+                'success': False,
+                'message': 'Username and password are required'
+            }), 400
+
+        # LOCAL MODE
+        if app.config['APP_MODE'] == 'LOCAL':
+
+            conn = get_sqlite_connection()
+            cursor = conn.cursor()
+
+            cursor.execute(
+                '''
+                SELECT user_id, username, password_hash
+                FROM users
+                WHERE username = ?
+                ''',
+                (username,)
+            )
+
+            user = cursor.fetchone()
+
+            conn.close()
+
+            if not user:
+                return jsonify({
+                    'success': False,
+                    'message': 'Invalid username or password'
+                }), 401
+
+            if not verify_password(password, user['password_hash']):
+                return jsonify({
+                    'success': False,
+                    'message': 'Invalid username or password'
+                }), 401
+
+        # CLOUD MODE
+        else:
+
+            user = login_user_cloud(username, password)
+
+            if not user:
+                return jsonify({
+                    'success': False,
+                    'message': 'Invalid username or password'
+                }), 401
+
         session['user_id'] = user['user_id']
         session['username'] = user['username']
+
         session.permanent = True
+
         app.permanent_session_lifetime = timedelta(days=7)
-        
+
         return jsonify({
             'success': True,
             'message': 'Login successful!',
             'user_id': user['user_id'],
             'username': user['username']
         }), 200
-    
+
     except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
+        return jsonify({
+            'success': False,
+            'message': str(e)
+        }), 500
+
+
+# @app.route('/api/login', methods=['POST'])
+# def login():
+#     """Login user"""
+#     try:
+#         data = request.get_json()
+#         username = data.get('username', '').strip()
+#         password = data.get('password', '').strip()
+
+#         if not username or not password:
+#             return jsonify({'success': False, 'message': 'Username and password are required'}), 400
+
+#         conn = get_sqlite_connection()
+#         cursor = conn.cursor()
+        
+#         cursor.execute('SELECT user_id, username, password_hash FROM users WHERE username = ?', (username,))
+#         user = cursor.fetchone()
+#         conn.close()
+        
+#         if not user:
+#             return jsonify({'success': False, 'message': 'Invalid username or password'}), 401
+ 
+#         if not verify_password(password, user['password_hash']):
+#             return jsonify({'success': False, 'message': 'Invalid username or password'}), 401
+
+#         session['user_id'] = user['user_id']
+#         session['username'] = user['username']
+#         session.permanent = True
+#         app.permanent_session_lifetime = timedelta(days=7)
+        
+#         return jsonify({
+#             'success': True,
+#             'message': 'Login successful!',
+#             'user_id': user['user_id'],
+#             'username': user['username']
+#         }), 200
+    
+#     except Exception as e:
+#         return jsonify({'success': False, 'message': str(e)}), 500
 
 @app.route('/api/logout', methods=['POST'])
 def logout():
-    """Logout user"""
     try:
         session.clear()
         return jsonify({'success': True, 'message': 'Logged out successfully'}), 200
@@ -224,7 +444,6 @@ def logout():
 
 @app.route('/api/auth_status', methods=['GET'])
 def auth_status():
-    """Check authentication status"""
     if is_logged_in():
         return jsonify({
             'success': True,
@@ -238,25 +457,18 @@ def auth_status():
             'is_logged_in': False
         }), 200
 
-# ============================================================================
-# DATABASE INITIALIZATION
-# ============================================================================
 
 def allowed_file(filename):
-    """Check if file extension is allowed"""
+
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
 
 def generate_tags(content, title, subject):
-    """
-    Generate tags using keyword-based tagging (LOCAL mode)
-    """
+
     tags = set()
-    
-    # Add subject as a tag
+
     if subject:
         tags.add(subject.lower())
-    
-    # Keywords for common topics
+
     keyword_map = {
         'python': ['python', 'flask', 'django', 'pandas', 'numpy'],
         'database': ['sql', 'database', 'mysql', 'postgresql', 'mongodb', 'dynamodb'],
@@ -266,48 +478,30 @@ def generate_tags(content, title, subject):
         'devops': ['docker', 'kubernetes', 'ci/cd', 'jenkins', 'gitlab', 'devops'],
         'security': ['security', 'encryption', 'authentication', 'oauth', 'jwt'],
         'api': ['api', 'rest', 'graphql', 'json', 'endpoint'],
-        'data': ['data', 'analysis', 'visualization', 'statistics', 'analytics']
+        'data': ['data', 'analysis', 'visualization', 'statistics', 'analytics'],
+        'programming':['java','python','C','CPP','C++']
+        
     }
-    
-    # Convert to lowercase for matching
+
     text = (content + " " + title).lower()
-    
-    # Extract keywords
+
     for category, keywords in keyword_map.items():
         for keyword in keywords:
             if keyword in text:
                 tags.add(category)
                 break
-    
-    # Extract words with capital letters (likely important terms)
+
     words = re.findall(r'\b[A-Z]{2,}\b', content + " " + title)
-    for word in words[:5]:  # Limit to 5 acronyms
+    for word in words[:5]:  
         tags.add(word.lower())
     
     return list(tags) if tags else ['untagged']
 
 def mock_ai_tags(content, title, subject):
-    """
-    Mock AI tagging system (simulating AWS Comprehend)
-    """
     return generate_tags(content, title, subject)
 
 
-# ============================================================================
-# FILE HANDLING — LOCAL AND S3
-# ============================================================================
-
-
-
-
 def save_file_s3(file):
-    """
-    Upload a file to AWS S3.
-
-    Returns (s3_key, None) on success.
-    Returns (None, error_message) on any failure so the caller can
-    show the user the real reason instead of a generic message.
-    """
     if not file or not file.filename:
         return None, "No file provided"
 
@@ -320,10 +514,8 @@ def save_file_s3(file):
         filename = secure_filename(file.filename)
         s3_key = f"uploads/{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:6]}_{filename}"
 
-        # Seek to start in case the stream was partially read
         file.stream.seek(0)
 
-        # Detect content type safely
         content_type = (file.content_type or '').strip()
         if not content_type or content_type == 'application/octet-stream':
             import mimetypes
@@ -347,10 +539,6 @@ def save_file_s3(file):
 
 
 def save_file_local(file):
-    """
-    Save uploaded file to local disk.
-    Returns (filename, None) on success, (None, error_message) on failure.
-    """
     if not file or not file.filename:
         return None, "No file provided"
 
@@ -372,12 +560,6 @@ def save_file_local(file):
 
 
 def save_file(file):
-    """
-    Route file saving to the correct backend based on APP_MODE.
-    Returns (file_url, error_message).
-    On success: (key_or_filename, None)
-    On failure: (None, "reason string")
-    """
     if app.config['APP_MODE'] == 'LOCAL':
         return save_file_local(file)
     else:
@@ -385,12 +567,6 @@ def save_file(file):
 
 
 def get_s3_presigned_url(s3_key, expiry=3600):
-    """
-    Generate a pre-signed URL for an S3 object so the browser can
-    download/view it directly without exposing AWS credentials.
-
-    expiry: URL validity in seconds (default 1 hour).
-    """
     try:
         s3_client = get_s3_client()
         url = s3_client.generate_presigned_url(
@@ -407,12 +583,7 @@ def get_s3_presigned_url(s3_key, expiry=3600):
         return None
 
 
-# ============================================================================
-# LOCAL MODE: SQLite Operations (UPDATED with user_id)
-# ============================================================================
-
 def add_note_local(title, subject, content, tags, file_url, user_id):
-    """Add note to SQLite database"""
     try:
         note_id = str(uuid.uuid4())
         now = datetime.now().isoformat()
@@ -433,7 +604,6 @@ def add_note_local(title, subject, content, tags, file_url, user_id):
         return {'success': False, 'message': str(e)}
 
 def get_notes_local(user_id, subject=None, search=None, sort_by='latest'):
-    """Fetch notes from SQLite database"""
     try:
         conn = get_sqlite_connection()
         cursor = conn.cursor()
@@ -450,7 +620,6 @@ def get_notes_local(user_id, subject=None, search=None, sort_by='latest'):
             search_term = f'%{search}%'
             params.extend([search_term, search_term])
         
-        # Sort based on sort_by parameter
         if sort_by == 'latest':
             query += ' ORDER BY pinned DESC, created_at DESC'
         elif sort_by == 'oldest':
@@ -478,12 +647,9 @@ def get_notes_local(user_id, subject=None, search=None, sort_by='latest'):
         return []
 
 def delete_note_local(note_id, user_id):
-    """Delete note from SQLite database"""
     try:
         conn = get_sqlite_connection()
         cursor = conn.cursor()
-        
-        # Verify ownership
         cursor.execute('SELECT file_url FROM notes WHERE id = ? AND user_id = ?', (note_id, user_id))
         row = cursor.fetchone()
         
@@ -505,12 +671,10 @@ def delete_note_local(note_id, user_id):
         return {'success': False, 'message': str(e)}
 
 def pin_note_local(note_id, user_id):
-    """Pin/Unpin note"""
     try:
         conn = get_sqlite_connection()
         cursor = conn.cursor()
-        
-        # Get current pinned status
+
         cursor.execute('SELECT pinned FROM notes WHERE id = ? AND user_id = ?', (note_id, user_id))
         row = cursor.fetchone()
         
@@ -532,24 +696,20 @@ def pin_note_local(note_id, user_id):
         return {'success': False, 'message': str(e)}
 
 def update_note_local(note_id, user_id, title, subject, content, file_url=None):
-    """Update note - FIXED VERSION"""
     try:
         tags = mock_ai_tags(content, title, subject)
         now = datetime.now().isoformat()
         
         conn = get_sqlite_connection()
         cursor = conn.cursor()
-        
-        # Check if note exists and user owns it
+
         cursor.execute('SELECT file_url FROM notes WHERE id = ? AND user_id = ?', (note_id, user_id))
         existing = cursor.fetchone()
         
         if not existing:
             conn.close()
             return {'success': False, 'message': 'Note not found or unauthorized'}
-        
-        # If file_url is provided (new file), use it
-        # Otherwise keep the existing file
+
         final_file_url = file_url if file_url else existing['file_url']
         
         cursor.execute('''
@@ -566,7 +726,6 @@ def update_note_local(note_id, user_id, title, subject, content, file_url=None):
         return {'success': False, 'message': str(e)}
 
 def get_note_local(note_id, user_id):
-    """Get single note"""
     try:
         conn = get_sqlite_connection()
         cursor = conn.cursor()
@@ -585,7 +744,6 @@ def get_note_local(note_id, user_id):
         return None
 
 def get_all_subjects_local(user_id):
-    """Get all unique subjects"""
     try:
         conn = get_sqlite_connection()
         cursor = conn.cursor()
@@ -598,12 +756,9 @@ def get_all_subjects_local(user_id):
     except Exception as e:
         return []
 
-# ============================================================================
-# CLOUD MODE: AWS DynamoDB & S3 Operations
-# ============================================================================
+# Cloud operations
 
 def get_dynamodb_table():
-    """Get DynamoDB table resource"""
     dynamodb = boto3.resource(
         'dynamodb',
         region_name=app.config['AWS_REGION'],
@@ -613,7 +768,6 @@ def get_dynamodb_table():
     return dynamodb.Table(app.config['AWS_DYNAMODB_TABLE'])
 
 def get_s3_client():
-    """Get S3 client"""
     return boto3.client(
         's3',
         region_name=app.config['AWS_REGION'],
@@ -622,7 +776,6 @@ def get_s3_client():
     )
 
 def add_note_cloud(title, subject, content, tags, file_url, user_id):
-    """Add note to DynamoDB"""
     try:
         note_id = str(uuid.uuid4())
         now = datetime.now().isoformat()
@@ -646,27 +799,38 @@ def add_note_cloud(title, subject, content, tags, file_url, user_id):
     except Exception as e:
         return {'success': False, 'message': str(e)}
 
+
+
+def get_users_table():
+    dynamodb = boto3.resource(
+        'dynamodb',
+        region_name=app.config['AWS_REGION'],
+        aws_access_key_id=app.config['AWS_ACCESS_KEY_ID'],
+        aws_secret_access_key=app.config['AWS_SECRET_ACCESS_KEY']
+    )
+
+    return dynamodb.Table(app.config['AWS_USERS_TABLE'])
+
+
+
+
 def get_notes_cloud(user_id, subject=None, search=None, sort_by='latest'):
-    """Fetch notes from DynamoDB"""
     try:
         table = get_dynamodb_table()
         response = table.scan(FilterExpression='user_id = :uid',
                              ExpressionAttributeValues={':uid': user_id})
         
         notes = response.get('Items', [])
-        
-        # Filter by subject if provided
+
         if subject:
             notes = [n for n in notes if n.get('subject') == subject]
-        
-        # Filter by search if provided
+
         if search:
             search_lower = search.lower()
             notes = [n for n in notes if 
                     search_lower in n.get('title', '').lower() or 
                     search_lower in n.get('content', '').lower()]
         
-        # Sort based on sort_by parameter
         if sort_by == 'latest':
             notes.sort(key=lambda x: (-x.get('pinned', False), -datetime.fromisoformat(x.get('created_at', '')).timestamp()))
         elif sort_by == 'oldest':
@@ -685,29 +849,26 @@ def get_notes_cloud(user_id, subject=None, search=None, sort_by='latest'):
         return []
 
 def delete_note_cloud(note_id, user_id):
-    """Delete note from DynamoDB and S3"""
     try:
         table = get_dynamodb_table()
-        
-        # Get note to find file_url
+
         response = table.get_item(Key={'id': note_id})
         item = response.get('Item', {})
         
         if item.get('user_id') != user_id:
             return {'success': False, 'message': 'Unauthorized'}
-        
-        # Delete file from S3 if exists
+  
         if item.get('file_url'):
             try:
                 s3_client = get_s3_client()
                 s3_client.delete_object(
                     Bucket=app.config['AWS_S3_BUCKET'],
-                    Key=item['file_url']   # file_url is now the S3 key
+                    Key=item['file_url'] 
+                    
                 )
             except Exception as e:
                 app.logger.warning(f"S3 delete failed (non-fatal): {e}")
         
-        # Delete from DynamoDB
         table.delete_item(Key={'id': note_id})
         
         return {'success': True, 'message': 'Note deleted from cloud successfully'}
@@ -715,11 +876,9 @@ def delete_note_cloud(note_id, user_id):
         return {'success': False, 'message': str(e)}
 
 def pin_note_cloud(note_id, user_id):
-    """Pin/Unpin note in DynamoDB"""
     try:
         table = get_dynamodb_table()
-        
-        # Get current pinned status
+ 
         response = table.get_item(Key={'id': note_id})
         item = response.get('Item', {})
         
@@ -740,21 +899,18 @@ def pin_note_cloud(note_id, user_id):
         return {'success': False, 'message': str(e)}
 
 def update_note_cloud(note_id, user_id, title, subject, content, file_url=None):
-    """Update note in DynamoDB - FIXED VERSION"""
     try:
         tags = mock_ai_tags(content, title, subject)
         now = datetime.now().isoformat()
         
         table = get_dynamodb_table()
-        
-        # Get existing note
+
         response = table.get_item(Key={'id': note_id})
         existing = response.get('Item')
         
         if not existing or existing.get('user_id') != user_id:
             return {'success': False, 'message': 'Note not found or unauthorized'}
-        
-        # If a new file was uploaded, delete the old S3 object first
+  
         old_file_url = existing.get('file_url', '')
         if file_url and old_file_url and old_file_url != file_url:
             try:
@@ -766,7 +922,6 @@ def update_note_cloud(note_id, user_id, title, subject, content, file_url=None):
             except Exception as e:
                 app.logger.warning(f"Old S3 file delete failed (non-fatal): {e}")
 
-        # Use the new file_url if provided, else keep existing
         final_file_url = file_url if file_url else old_file_url
         
         update_expr = 'SET title = :t, subject = :s, content = :c, tags = :tg, file_url = :f, updated_at = :u'
@@ -790,7 +945,6 @@ def update_note_cloud(note_id, user_id, title, subject, content, file_url=None):
         return {'success': False, 'message': str(e)}
 
 def get_note_cloud(note_id, user_id):
-    """Get single note from DynamoDB"""
     try:
         table = get_dynamodb_table()
         response = table.get_item(Key={'id': note_id})
@@ -803,7 +957,6 @@ def get_note_cloud(note_id, user_id):
         return None
 
 def get_all_subjects_cloud(user_id):
-    """Get all unique subjects from DynamoDB"""
     try:
         table = get_dynamodb_table()
         response = table.scan(ProjectionExpression='subject, user_id',
@@ -819,18 +972,13 @@ def get_all_subjects_cloud(user_id):
     except Exception as e:
         return []
 
-# ============================================================================
-# FLASK ROUTES (UPDATED WITH LOGIN CHECK)
-# ============================================================================
 
 @app.route('/')
 def index():
-    """Render main page"""
     return render_template('index.html', app_mode=app.config['APP_MODE'])
 
 @app.route('/api/config', methods=['GET'])
 def get_config():
-    """Get app configuration"""
     return jsonify({
         'app_mode': app.config['APP_MODE'],
         'max_file_size': app.config['MAX_CONTENT_LENGTH'],
@@ -839,9 +987,7 @@ def get_config():
 
 @app.route('/api/add_note', methods=['POST'])
 def add_note():
-    """Add a new note"""
     try:
-        # Check if user is logged in
         if not is_logged_in():
             return jsonify({'success': False, 'message': 'Not authenticated'}), 401
         
@@ -852,22 +998,17 @@ def add_note():
         subject = data.get('subject', '').strip()
         content = data.get('content', '').strip()
         file = request.files.get('file')
-        
-        # Validation
+
         if not title or not subject or not content:
             return jsonify({'success': False, 'message': 'Title, subject, and content are required'}), 400
-        
-        # Save file using the correct backend (local disk or S3)
         file_url = None
         if file and file.filename:
             file_url, file_error = save_file(file)
             if file_error:
                 return jsonify({'success': False, 'message': file_error}), 400
-        
-        # Generate tags
+
         tags = mock_ai_tags(content, title, subject)
-        
-        # Add note based on mode
+
         if app.config['APP_MODE'] == 'LOCAL':
             result = add_note_local(title, subject, content, tags, file_url, user_id)
         else:
@@ -884,7 +1025,6 @@ def add_note():
 def get_notes():
     """Get all notes"""
     try:
-        # Check if user is logged in
         if not is_logged_in():
             return jsonify({'success': False, 'message': 'Not authenticated'}), 401
         
@@ -912,7 +1052,6 @@ def get_notes():
 
 @app.route('/api/get_note/<note_id>', methods=['GET'])
 def get_note(note_id):
-    """Get single note"""
     try:
         if not is_logged_in():
             return jsonify({'success': False, 'message': 'Not authenticated'}), 401
@@ -936,7 +1075,6 @@ def get_note(note_id):
 
 @app.route('/api/delete_note/<note_id>', methods=['DELETE'])
 def delete_note(note_id):
-    """Delete a note"""
     try:
         if not is_logged_in():
             return jsonify({'success': False, 'message': 'Not authenticated'}), 401
@@ -957,7 +1095,6 @@ def delete_note(note_id):
 
 @app.route('/api/pin_note/<note_id>', methods=['PUT'])
 def pin_note(note_id):
-    """Pin/Unpin a note"""
     try:
         if not is_logged_in():
             return jsonify({'success': False, 'message': 'Not authenticated'}), 401
@@ -978,7 +1115,6 @@ def pin_note(note_id):
 
 @app.route('/api/update_note/<note_id>', methods=['PUT'])
 def update_note(note_id):
-    """Update a note"""
     try:
         if not is_logged_in():
             return jsonify({'success': False, 'message': 'Not authenticated'}), 401
@@ -990,19 +1126,16 @@ def update_note(note_id):
         subject = data.get('subject', '').strip()
         content = data.get('content', '').strip()
         file = request.files.get('file')
-        
-        # Validation
+
         if not title or not subject or not content:
             return jsonify({'success': False, 'message': 'Title, subject, and content are required'}), 400
         
-        # Save new file using the correct backend if provided
         file_url = None
         if file and file.filename:
             file_url, file_error = save_file(file)
             if file_error:
                 return jsonify({'success': False, 'message': file_error}), 400
-        
-        # Update note based on mode
+
         if app.config['APP_MODE'] == 'LOCAL':
             result = update_note_local(note_id, user_id, title, subject, content, file_url)
         else:
@@ -1017,7 +1150,6 @@ def update_note(note_id):
 
 @app.route('/api/subjects', methods=['GET'])
 def get_subjects():
-    """Get all subjects"""
     try:
         if not is_logged_in():
             return jsonify({'success': False, 'message': 'Not authenticated'}), 401
@@ -1042,15 +1174,6 @@ def get_subjects():
 
 @app.route('/uploads/<filename>')
 def download_file(filename):
-    """
-    Serve uploaded files.
-
-    LOCAL mode  → stream file directly from LOCAL_STORAGE_PATH.
-    CLOUD mode  → redirect the browser to a short-lived S3 pre-signed URL.
-                  The 'filename' here should be the full S3 key, but since
-                  Flask routes can't contain slashes by default we expose a
-                  dedicated API endpoint for cloud downloads (see below).
-    """
     if app.config['APP_MODE'] == 'LOCAL':
         from flask import send_from_directory
         try:
@@ -1058,7 +1181,6 @@ def download_file(filename):
         except Exception as e:
             return jsonify({'success': False, 'message': str(e)}), 404
     else:
-        # In cloud mode, callers should use /api/file_url?key=<s3_key> instead.
         return jsonify({
             'success': False,
             'message': 'Use /api/file_url?key=<s3_key> to access cloud files'
@@ -1067,16 +1189,6 @@ def download_file(filename):
 
 @app.route('/api/file_url', methods=['GET'])
 def get_file_url():
-    """
-    CLOUD MODE ONLY — return a pre-signed S3 URL for a given S3 key.
-
-    Query param:
-        key  — the S3 object key stored in DynamoDB as file_url
-               e.g. uploads/20240501120000_report.pdf
-
-    The pre-signed URL is valid for 1 hour. The browser can use it directly
-    to download or display the file without any AWS credentials.
-    """
     if not is_logged_in():
         return jsonify({'success': False, 'message': 'Not authenticated'}), 401
 
@@ -1099,24 +1211,20 @@ def get_file_url():
 
 @app.errorhandler(404)
 def not_found(error):
-    """Handle 404 errors"""
     return jsonify({'success': False, 'message': 'Not found'}), 404
 
 @app.errorhandler(500)
 def internal_error(error):
-    """Handle 500 errors"""
     return jsonify({'success': False, 'message': 'Internal server error'}), 500
 
-# ============================================================================
-# MAIN
-# ============================================================================
+
 
 if __name__ == '__main__':
     print(f"\n{'='*70}")
-    print(f"🚀 Smart Notes Application Starting")
+    print(f"Smart Notes Application Starting")
     print(f"{'='*70}")
-    print(f"📍 Mode: {app.config['APP_MODE']}")
-    print(f"🌐 URL: http://127.0.0.1:5000")
+    print(f"Mode: {app.config['APP_MODE']}")
+    print(f"URL: http://127.0.0.1:5000")
     print(f"{'='*70}\n")
     
     app.run(debug=app.config['DEBUG'], host='0.0.0.0', port=5000)
